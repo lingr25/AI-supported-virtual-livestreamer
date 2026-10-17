@@ -8,19 +8,24 @@ class YouTubeAPI:
     def get_live_chat_id(self, video_id):
         request = self.youtube.videos().list(part='liveStreamingDetails', id=video_id)
         response = request.execute()
-        if 'items' in response and len(response['items']) > 0:
-            return response['items'][0]['liveStreamingDetails']['activeLiveChatId']
+        items = response.get('items') or []
+        if items:
+            # 视频不在直播中时没有 liveStreamingDetails / activeLiveChatId
+            return items[0].get('liveStreamingDetails', {}).get('activeLiveChatId')
         return None
 
     def get_latest_live_chat_message(self, live_chat_id, page_token=None):
         request = self.youtube.liveChatMessages().list(
             liveChatId=live_chat_id,
             part='snippet,authorDetails',
-            maxResults=1,  # 获取最后一条消息
+            maxResults=200,
             pageToken=page_token
         )
         response = request.execute()
         return response
+
+SYSTEM_PROMPT = "你是虚拟主播..."
+
 
 class ZhipuAI:
     def __init__(self, api_key):
@@ -35,7 +40,7 @@ class ZhipuAI:
                 json={
                     "model": "glm-4-flash",
                     "messages": [
-                        {"role": "system", "content": "你是虚拟主播..."},
+                        {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": message}
                     ],
                     "top_p": 0.7,
@@ -44,10 +49,11 @@ class ZhipuAI:
                     "tools": [{"type": "web_search", "web_search": {"search_result": True}}],
                     "stream": False,
                 },
-                headers={"Authorization": f"Bearer {self.api_key}"}
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=30
             )
             response.raise_for_status()
             return response.json()["choices"][0]["message"]["content"]
-        except requests.exceptions.RequestException as e:
+        except (requests.exceptions.RequestException, KeyError, IndexError, ValueError) as e:
             print("zhipuai发生错误：{}".format(e))
             return None

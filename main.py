@@ -1,66 +1,65 @@
 from api import YouTubeAPI, ZhipuAI
 from speech_synthesis import SpeechSynthesizer
-from chat_handler import ChatHandler
+from chat_handler import ChatHandler, LiveChatPoller
 from action_control import ActionControl
+import os
+import sys
 import time
 
-def main():
-    youtube_api_key = 'YOUR_YOUTUBE_API_KEY'
-    zhipuai_api_key = "YOUR_ZHIPUAI_API_KEY"
-    speech_key = "YOUR_SPEECH_KEY"
-    speech_region = "YOUR_SPEECH_REGION"
+REQUIRED_ENV_VARS = ["YOUTUBE_API_KEY", "ZHIPUAI_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"]
+IDLE_SECONDS = 45
+IDLE_PROMPT = "说点什么吧，不要冷场啦"
 
-    youtube_api = YouTubeAPI(youtube_api_key)
-    zhipuai_api = ZhipuAI(zhipuai_api_key)
-    speech_synthesizer = SpeechSynthesizer(speech_key, speech_region)
+
+def load_config():
+    missing = [name for name in REQUIRED_ENV_VARS if not os.environ.get(name)]
+    if missing:
+        print("缺少环境变量: " + ", ".join(missing))
+        print("请先设置这些环境变量后再运行，例如: export YOUTUBE_API_KEY=xxx")
+        sys.exit(1)
+    return {name: os.environ[name] for name in REQUIRED_ENV_VARS}
+
+
+def main():
+    config = load_config()
+
+    youtube_api = YouTubeAPI(config["YOUTUBE_API_KEY"])
+    zhipuai_api = ZhipuAI(config["ZHIPUAI_API_KEY"])
+    speech_synthesizer = SpeechSynthesizer(config["AZURE_SPEECH_KEY"], config["AZURE_SPEECH_REGION"])
     action_control = ActionControl()
 
-    chat_handler = ChatHandler(youtube_api, zhipuai_api, speech_synthesizer)
+    chat_handler = ChatHandler(youtube_api, zhipuai_api, speech_synthesizer, action_control)
 
     default_video_id = '7cfEOOSIoJE'
     video_id = input(f"请输入直播视频ID (按Enter使用默认值 {default_video_id}): ")
     if not video_id.strip():
         video_id = default_video_id
+    video_id = video_id.strip()
 
     live_chat_id = youtube_api.get_live_chat_id(video_id)
-    if live_chat_id:
-        last_message_id = None
-        page_token = None
-        last_message_time = time.time()
+    if not live_chat_id:
+        print("Live chat ID not found for the given video ID.（该视频可能不在直播中）")
+        return
 
-        action_control.start_random_action_thread()
+    poller = LiveChatPoller(youtube_api, chat_handler, live_chat_id)
+    action_control.start_random_action_thread()
 
-        while True:
-            live_chat_messages = youtube_api.get_latest_live_chat_message(live_chat_id, page_token)
+    while True:
+        try:
+            wait_seconds = poller.poll()
+        except Exception as e:
+            print("获取弹幕发生错误：{}".format(e))
+            wait_seconds = LiveChatPoller.MIN_POLL_INTERVAL
 
-            if 'items' in live_chat_messages and len(live_chat_messages['items']) > 0:
-                latest_message = live_chat_messages['items'][-1]  # 获取最后一条消息
-                message_id = latest_message['id']
+        # 如果45秒没有弹幕，则调用智谱AI
+        if time.time() - poller.last_message_time > IDLE_SECONDS:
+            ai_response = zhipuai_api.get_ai_response(IDLE_PROMPT)
+            if ai_response:
+                chat_handler.respond(ai_response)
+            poller.last_message_time = time.time()
 
-                if message_id != last_message_id:
-                    last_message_id = message_id
-                    author = latest_message['authorDetails']['displayName']
-                    message_text = latest_message['snippet'].get('displayMessage', '')
-                    chat_handler.handle_message(author, message_text)
-                    last_message_time = time.time()
+        time.sleep(wait_seconds)
 
-            # 更新 page_token
-            page_token = live_chat_messages.get('nextPageToken', None)
-
-            # 如果45秒没有弹幕，则调用智谱AI
-            if time.time() - last_message_time > 45:
-                ai_response = zhipuai_api.get_ai_response("说点什么吧，不要冷场啦")
-                if ai_response:
-                    action = chat_handler.extract_action(ai_response)
-                    filtered_response = chat_handler.filter_response(ai_response)
-                    if action:
-                        action_control.simulate_keypress(action_control.action_map.get(action, 2))
-                    speech_synthesizer.speak_text(filtered_response)
-                last_message_time = time.time()
-
-            time.sleep(5)
-    else:
-        print("Live chat ID not found for the given video ID.")
 
 if __name__ == "__main__":
     main()
