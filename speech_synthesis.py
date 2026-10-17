@@ -4,10 +4,11 @@ class SpeechSynthesizer:
     def __init__(self, speech_key, region):
         self.speech_config = speechsdk.SpeechConfig(subscription=speech_key, region=region)
         self.audio_config = speechsdk.audio.AudioOutputConfig(use_default_speaker=True)
+        # 必须在创建 SpeechSynthesizer 之前设置音色，否则不生效
+        self.speech_config.speech_synthesis_voice_name = 'zh-CN-XiaoshuangNeural'
         self.speech_synthesizer = speechsdk.SpeechSynthesizer(
             speech_config=self.speech_config, audio_config=self.audio_config
         )
-        self.speech_config.speech_synthesis_voice_name = 'zh-CN-XiaoshuangNeural'
 
     def speak_text(self, text):
         try:
